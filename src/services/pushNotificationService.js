@@ -5,7 +5,7 @@
 
 import { initializeApp, cert, getApps, getApp } from 'firebase-admin/app';
 import { getMessaging } from 'firebase-admin/messaging';
-import { createRequire } from 'module';
+import fs from 'fs';
 import path from 'path';
 import { fileURLToPath } from 'url';
 import { query } from '../db/db.js';
@@ -20,19 +20,32 @@ export async function initFirebase() {
   try {
     let serviceAccount = null;
 
+    // Try env var first (Railway production)
     if (process.env.FIREBASE_SERVICE_ACCOUNT_JSON) {
       try {
         serviceAccount = JSON.parse(process.env.FIREBASE_SERVICE_ACCOUNT_JSON);
-      } catch (_) {}
+      } catch (_) {
+        console.warn('[FCM] Failed to parse FIREBASE_SERVICE_ACCOUNT_JSON env var');
+      }
     }
 
+    // Fallback: try reading JSON file
     if (!serviceAccount) {
-      const serviceAccountPath = path.resolve(
-        __dirname,
-        '../../firebase-service-account.json'
-      );
-      const require = createRequire(import.meta.url);
-      serviceAccount = require(serviceAccountPath);
+      const serviceAccountPath = path.resolve(__dirname, '../../firebase-service-account.json');
+      if (fs.existsSync(serviceAccountPath)) {
+        try {
+          serviceAccount = JSON.parse(fs.readFileSync(serviceAccountPath, 'utf8'));
+        } catch (_) {
+          console.warn('[FCM] Failed to parse firebase-service-account.json');
+        }
+      }
+    }
+
+    // No credentials available — skip Firebase silently
+    if (!serviceAccount) {
+      console.warn('⚠️  Firebase FCM skipped: no credentials found (set FIREBASE_SERVICE_ACCOUNT_JSON env var)');
+      fcmEnabled = false;
+      return false;
     }
 
     const apps = getApps();
