@@ -105,24 +105,29 @@ app.use((err, req, res, next) => {
   });
 });
 
-// Start Server
-const server = app.listen(config.port, '0.0.0.0', async () => {
+// Global error handlers — prevent silent crashes
+process.on('unhandledRejection', (reason) => {
+  console.error('⚠️  Unhandled Rejection:', reason);
+});
+process.on('uncaughtException', (err) => {
+  console.error('💥 Uncaught Exception:', err.message);
+});
+
+// Start Server — bind to port FIRST, then run async checks
+const server = app.listen(config.port, '0.0.0.0', () => {
   console.log(`\n======================================================`);
   console.log(`⚡ VoraTok Short Video API Server is running!`);
-  console.log(`📡 URL: http://localhost:${config.port}`);
+  console.log(`📡 PORT: ${config.port}`);
   console.log(`🛡️  Mode: ${config.nodeEnv}`);
   console.log(`📱 OTP Provider: ${config.otpProvider}`);
-  console.log(`🎥 Uploads CDN: http://localhost:${config.port}/uploads/videos`);
   console.log(`======================================================\n`);
+});
 
-  // Test Supabase, Cloudinary & Firebase connections
-  try {
-    await testConnection();
-    await StorageService.testConnection();
-    await initFirebase();
-  } catch (err) {
-    console.warn('⚠️  Connection check error:', err.message);
-  }
+// Run async init AFTER listen (non-blocking)
+server.on('listening', async () => {
+  try { await testConnection(); } catch (e) { console.warn('⚠️  DB check failed:', e.message); }
+  try { await StorageService.testConnection(); } catch (e) { console.warn('⚠️  Cloudinary check failed:', e.message); }
+  try { await initFirebase(); } catch (e) { console.warn('⚠️  Firebase check failed:', e.message); }
 });
 
 export default app;
