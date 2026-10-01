@@ -9,6 +9,7 @@ import { config } from '../config/env.js';
 import { query } from '../db/db.js';
 
 // ── OTP Providers ─────────────────────────────────────────────────
+
 class MockOTPProvider {
   async sendSMS(mobileNumber, otpCode) {
     console.log(`\n======================================================`);
@@ -17,10 +18,44 @@ class MockOTPProvider {
     console.log(`OTP Code: [ ${otpCode} ]`);
     console.log(`Valid for: ${config.otpExpiryMinutes} minutes.`);
     console.log(`======================================================\n`);
-    return { success: true, messageId: `mock_${Date.now()}` };
+    return { success: true, provider: 'Mock', messageId: `mock_${Date.now()}` };
   }
 }
 
+// ── 2factor.in — Best for India, works with cloud IPs ─────────────
+class TwoFactorProvider {
+  constructor(apiKey) {
+    this.apiKey = apiKey || process.env.TWOFACTOR_API_KEY;
+  }
+
+  async sendSMS(mobileNumber, otpCode) {
+    if (!this.apiKey) {
+      console.warn('[2factor] API key missing, falling back to mock.');
+      return new MockOTPProvider().sendSMS(mobileNumber, otpCode);
+    }
+
+    const cleanNumber = mobileNumber.replace(/\D/g, '').slice(-10);
+    try {
+      const url = `https://2factor.in/API/V1/${this.apiKey}/SMS/+91${cleanNumber}/${otpCode}/OTP1`;
+      const response = await fetch(url);
+      const data = await response.json();
+
+      console.log(`[2factor.in] To: ${cleanNumber} | Status:`, data.Status);
+
+      if (data.Status === 'Success') {
+        return { success: true, provider: '2factor.in', messageId: data.Details };
+      } else {
+        console.warn(`[2factor.in Warning]: ${data.Details}. Falling back to mock.`);
+        return new MockOTPProvider().sendSMS(mobileNumber, otpCode);
+      }
+    } catch (err) {
+      console.error('[2factor.in Error]:', err.message);
+      return new MockOTPProvider().sendSMS(mobileNumber, otpCode);
+    }
+  }
+}
+
+// ── Fast2SMS ─────────────────────────────────────────────────────
 class Fast2SMSProvider {
   constructor(apiKey) {
     this.apiKey = apiKey || process.env.FAST2SMS_API_KEY;
@@ -28,58 +63,79 @@ class Fast2SMSProvider {
 
   async sendSMS(mobileNumber, otpCode) {
     if (!this.apiKey) {
-      console.warn('[Fast2SMS] API key missing, falling back to mock send.');
       return new MockOTPProvider().sendSMS(mobileNumber, otpCode);
     }
 
     const cleanNumber = mobileNumber.replace(/\D/g, '').slice(-10);
-
     try {
       const url = `https://www.fast2sms.com/dev/bulkV2?authorization=${this.apiKey}&route=otp&variables_values=${otpCode}&flash=0&numbers=${cleanNumber}`;
       const response = await fetch(url, { headers: { 'cache-control': 'no-cache' } });
       const data = await response.json();
-      
-      console.log(`[Fast2SMS SMS Gateway] To: ${cleanNumber} | Status:`, data);
+
+      console.log(`[Fast2SMS] To: ${cleanNumber} | Status:`, data);
 
       if (data.return === true) {
         return { success: true, provider: 'Fast2SMS', data };
       } else {
-        console.warn(`[Fast2SMS Warning]: ${data.message || 'SMS delivery failed'}. Showing OTP on test screen.`);
+        console.warn(`[Fast2SMS Warning]: ${data.message}. Falling back to mock.`);
         return new MockOTPProvider().sendSMS(mobileNumber, otpCode);
       }
     } catch (err) {
-      console.error('[Fast2SMS Gateway Error]:', err.message);
+      console.error('[Fast2SMS Error]:', err.message);
       return new MockOTPProvider().sendSMS(mobileNumber, otpCode);
     }
   }
 }
 
-class MSG91Provider {
-  async sendSMS(mobileNumber, otpCode) {
-    if (!process.env.MSG91_AUTH_KEY) {
-      return new MockOTPProvider().sendSMS(mobileNumber, otpCode);
-    }
-    return { success: true, provider: 'MSG91', messageId: `msg91_${Date.now()}` };
-  }
-}
-
+// ── Twilio ────────────────────────────────────────────────────────
 class TwilioProvider {
   async sendSMS(mobileNumber, otpCode) {
-    if (!process.env.TWILIO_ACCOUNT_SID) {
+    const sid   = process.env.TWILIO_ACCOUNT_SID;
+    const token = process.env.TWILIO_AUTH_TOKEN;
+    const from  = process.env.TWILIO_PHONE_NUMBER;
+
+    if (!sid || !token || !from) {
+      console.warn('[Twilio] Credentials missing, falling back to mock.');
       return new MockOTPProvider().sendSMS(mobileNumber, otpCode);
     }
-    return { success: true, provider: 'Twilio', messageId: `tw_${Date.now()}` };
+
+    const cleanNumber = mobileNumber.replace(/\D/g, '');
+    const toNumber = cleanNumber.length === 10 ? `+91${cleanNumber}` : `+${cleanNumber}`;
+
+    try {
+      const body = `Your VoraTok verification code is: ${otpCode}. Valid for ${config.otpExpiryMinutes} minutes. Do not share.`;
+      const params = new URLSearchParams({ To: toNumber, From: from, Body: body });
+      const response = await fetch(`https://api.twilio.com/2010-04-01/Accounts/${sid}/Messages.json`, {
+        method: 'POST',
+        headers: {
+          'Authorization': 'Basic ' + Buffer.from(`${sid}:${token}`).toString('base64'),
+          'Content-Type': 'application/x-www-form-urlencoded'
+        },
+        body: params.toString()
+      });
+      const data = await response.json();
+
+      if (data.sid) {
+        console.log(`[Twilio] SMS sent to ${toNumber} | SID: ${data.sid}`);
+        return { success: true, provider: 'Twilio', messageId: data.sid };
+      } else {
+        console.warn('[Twilio Error]:', data.message);
+        return new MockOTPProvider().sendSMS(mobileNumber, otpCode);
+      }
+    } catch (err) {
+      console.error('[Twilio Error]:', err.message);
+      return new MockOTPProvider().sendSMS(mobileNumber, otpCode);
+    }
   }
 }
 
+// ── Auto-select provider based on env vars ────────────────────────
 function getProvider() {
-  const providerType = (process.env.OTP_PROVIDER || config.otpProvider || 'fast2sms').toLowerCase();
-  switch (providerType) {
-    case 'fast2sms': return new Fast2SMSProvider();
-    case 'msg91':    return new MSG91Provider();
-    case 'twilio':   return new TwilioProvider();
-    default:         return new MockOTPProvider();
-  }
+  // Priority: 2factor > Twilio > Fast2SMS > Mock
+  if (process.env.TWOFACTOR_API_KEY)   return new TwoFactorProvider();
+  if (process.env.TWILIO_ACCOUNT_SID)  return new TwilioProvider();
+  if (process.env.FAST2SMS_API_KEY)    return new Fast2SMSProvider();
+  return new MockOTPProvider();
 }
 
 export class OTPService {
