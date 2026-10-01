@@ -20,8 +20,18 @@ export async function initFirebase() {
   try {
     let serviceAccount = null;
 
-    // Try env var first (Railway production)
-    if (process.env.FIREBASE_SERVICE_ACCOUNT_JSON) {
+    // Try Base64 env var first (safest for Railway production)
+    if (process.env.FIREBASE_SERVICE_ACCOUNT_B64) {
+      try {
+        const decoded = Buffer.from(process.env.FIREBASE_SERVICE_ACCOUNT_B64, 'base64').toString('utf8');
+        serviceAccount = JSON.parse(decoded);
+      } catch (_) {
+        console.warn('[FCM] Failed to parse FIREBASE_SERVICE_ACCOUNT_B64 env var');
+      }
+    }
+
+    // Try raw JSON env var
+    if (!serviceAccount && process.env.FIREBASE_SERVICE_ACCOUNT_JSON) {
       try {
         serviceAccount = JSON.parse(process.env.FIREBASE_SERVICE_ACCOUNT_JSON);
       } catch (_) {
