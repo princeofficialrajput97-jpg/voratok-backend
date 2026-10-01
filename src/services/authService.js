@@ -105,13 +105,22 @@ export class AuthService {
       throw new Error('Username and password are required.');
     }
 
+    const cleanInput = username.trim();
+    // Normalize phone number for flexible matching
+    const cleanDigits = cleanInput.replace(/\D/g, '').slice(-10);
+    const withPrefix  = `+91${cleanDigits}`;
+
     const res = await query(
       `SELECT u.*, p.followers_count, p.following_count, p.likes_count, p.videos_count,
               p.is_private, p.allow_comments, p.allow_downloads
        FROM users u
        LEFT JOIN profiles p ON p.user_id = u.id
-       WHERE LOWER(u.username) = LOWER($1) OR u.mobile_number = $1`,
-      [username.trim()]
+       WHERE LOWER(u.username) = LOWER($1)
+          OR u.mobile_number = $1
+          OR u.mobile_number = $2
+          OR u.mobile_number = $3
+          OR u.mobile_number LIKE $4`,
+      [cleanInput, withPrefix, cleanDigits, `%${cleanDigits}`]
     );
 
     const user = res.rows[0];
